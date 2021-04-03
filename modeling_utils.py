@@ -22,7 +22,7 @@ from transformers.file_utils import (
     hf_bucket_url,
     is_remote_url,
 )
-
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -100,8 +100,8 @@ def top_k_top_p_filtering(logits, top_k=0, top_p=1.0, filter_value=-float("Inf")
         indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
         logits[indices_to_remove] = filter_value
     return logits
-            
-            
+
+
 class PreTrainedModel(nn.Module, ModuleUtilsMixin):
     r""" Base class for all models.
 
@@ -675,7 +675,8 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
         code_0="negative",
         code_1="positive",
         multi_code=None,
-        get_ll=False
+        get_ll=False,
+        eval_generation=None
     ):
         r""" Generates sequences for models with a LM head. The method currently supports greedy or penalized greedy decoding, sampling with top-k or nucleus sampling
         and beam-search.
@@ -850,8 +851,12 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
             code_0,
             code_1,
             multi_code,
-            get_ll
+            get_ll,
+            eval_generation
         )
+
+        if eval_generation:
+            return output
 
         if num_return_sequences != 1:
             output = output.view(batch_size, num_return_sequences, -1)
@@ -921,7 +926,8 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
         code_0,
         code_1,
         multi_code,
-        get_ll
+        get_ll,
+        eval_generation
     ):
         """ Generate sequences for each example without beam search (num_beams == 1).
             All returned sequence are generated independantly.
@@ -977,6 +983,14 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
         if get_ll:
             sequence_ll = 0
 
+        if eval_generation:
+            max_length = len(eval_generation) + 1
+            eval_gen = iter(eval_generation)
+            total_logprob = 0
+            logprobs = []
+            no_repeat_ngram_size = 0
+
+        all_logits = None
         while cur_len < max_length:
             model_inputs = self.prepare_inputs_for_generation(input_ids, past=past)
             if not(pad_lens is None):
@@ -1059,7 +1073,6 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
                 logp_undesired_t = torch.log_softmax(logits,-1)[:,:,1]
 
                 next_token_logits = torch.log_softmax(1*next_token_logits,-1) + disc_weight*(logp_desired_t) #+delta_capped82058721
-
                 sorted_logps, sorted_indices = torch.sort(logp_desired_t, descending=False)
 
                 peak= torch.max(next_token_logits,1).values.unsqueeze(1)
@@ -1068,7 +1081,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
                 for i in range(0,next_token_logits.shape[0]):
 
 
-                    if True:
+                    if not eval_generation:
                         p_sorted = next_token_p[i,sorted_indices[i]]
                         cumulative_probs = torch.cumsum(p_sorted, dim=-1)
 
@@ -1087,7 +1100,8 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
 
 
 
-
+            if get_ll:
+                next_token_logp = torch.log_softmax(next_token_logits,-1)
             # if model has past, then set the past variable to speed up decoding
 
             if not (gedi_model is None):
@@ -1095,9 +1109,10 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
             if gpt3_api_key is None:
                 past = outputs[1]
 
-            max = torch.max(next_token_logits,-1,keepdim=True)
-            max=max[0]
-            next_token_logits= next_token_logits - max + rep_penalty_scale
+            if not eval_generation: #disable repetition penalty for ppl calculation
+                max = torch.max(next_token_logits,-1,keepdim=True)
+                max=max[0]
+                next_token_logits= next_token_logits - max + rep_penalty_scale
 
             # repetition penalty from CTRL paper (https://arxiv.org/abs/1909.05858)
             if repetition_penalty != 1.0:
@@ -1145,6 +1160,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
             if no_repeat_ngram_size > 0:
                 # calculate a list of banned tokens to prevent repetitively generating the same ngrams
                 # from fairseq: https://github.com/pytorch/fairseq/blob/a07cb6f40480928c9e0548b737aadd36ee66ac76/fairseq/sequence_generator.py#L345
+                assert not eval_generation
                 banned_tokens = calc_banned_ngram_tokens(input_ids[cond_len:], batch_size, no_repeat_ngram_size, len(input_ids[cond_len:]))
                 for batch_idx in range(batch_size):
                     next_token_logits[batch_idx, banned_tokens[batch_idx]] = -float("inf")
@@ -1158,7 +1174,14 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
                         if (cur_len < min_length):
                             next_token_logits[i, eos_token_id] -=10000
 
-            if do_sample:
+            if eval_generation:
+                next_elem = next(eval_gen)
+                next_token = torch.tensor([next_elem]).cuda()
+                prob = next_token_logits[0][next_elem].item()
+                total_logprob += prob
+                print(prob)
+                logprobs.append(prob)
+            elif do_sample:
                 # Temperature (higher temperature => more likely to sample low probability tokens)
                 if temperature != 1.0:
                     next_token_logits = next_token_logits / temperature
@@ -1195,6 +1218,8 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
             if unfinished_sents.max() == 0:
                 break
 
+        if eval_generation: #convert probability to ppl
+            return np.exp(-(total_logprob) / (len(eval_generation)))
         if not(gedi_model is None):
             print("GeDi estimates the probability that it sample is desired class is: " + str(torch.exp(logp_desired[0]).item()))
 

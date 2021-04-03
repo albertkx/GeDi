@@ -23,6 +23,4 @@ python ../train_GeDi.py --task_name SST-2 \
   --logging_steps 500 \
   --save_steps 5000000000 \
   --code_0 false \
-  --code_1 true \
-  --fp16
-
+  --code_1 true

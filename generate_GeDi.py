@@ -25,7 +25,6 @@ from transformers import (
 
 
 import os.path
-import time
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -54,6 +53,16 @@ def adjust_length_to_model(length, max_sequence_length):
     elif length < 0:
         length = MAX_LENGTH  # avoid infinite loop
     return length
+
+def tokenize_generations(filename, tokenizer):
+    generations = []
+    with open(filename, "r") as f:
+        for line in f:
+            generations.append(line.rstrip())
+    generations = [tokenizer.encode(elem) for elem in generations]
+    print("A few examples tokenized:")
+    print(generations[:3])
+    return generations
 
 def main():
     parser = argparse.ArgumentParser()
@@ -108,7 +117,7 @@ def main():
     ##arguments for generation
     parser.add_argument("--gen_length", type=int, default=128, help= "generation length")
     parser.add_argument("--stop_token", type=str, default=None, help="Token at which text generation is stopped")
-    parser.add_argument("--temperature", type=float, default=1.0,
+    parser.add_argument("--temperature", type=float, default=0.1,
                         help="lower tend toward greedy sampling",
     )
     parser.add_argument("--disc_weight", type=float, default=30.0,
@@ -137,13 +146,13 @@ def main():
                         help="can use positive number to set max logit. rep penalty works better with positive logits")
     parser.add_argument("--penalize_cond", action="store_true",
                         help="apply repetition penalty to tokens in coditioning text")
-    parser.add_argument("--k", type=float, default=None,
+    parser.add_argument("--k", type=int, default=None,
                         help="The number of highest probability vocabulary tokens to keep for top-k-filtering. Between 1 and infinity. Default to 50.",)
 
     parser.add_argument("--p", type=float, default=None,
                             help="The cumulative probability of parameter highest probability vocabulary tokens to keep for nucleus sampling. Must be between 0 and 1. Default to 1.",
                        )
-
+    parser.add_argument("--prompt_file",type=str, default="", help="prompt file to generate from")
 
 
     parser.add_argument("--gen_type", type=str, default="gedi", help="gedi, cclm, or gpt2")
@@ -153,8 +162,10 @@ def main():
     parser.add_argument("--secondary_code", type=str, default="business", help="secondary topic control code")
 
     parser.add_argument("--gpt3_api_key", type=str, default=None,  help= "GPT-3 api key" )
-
     parser.add_argument("--prompt", type=str, default="",  help= "prompt for generation" )
+    parser.add_argument("--num_gen", type=int, default=1, help="number to generate if prompt given")
+    parser.add_argument("--out_file", type=str, default="", help="file to save generations to")
+    parser.add_argument("--evaluation_file", type=str, default="", help="evaluation file for ppl calculation")
 
 
 
@@ -226,6 +237,13 @@ def main():
 
     tokenizer = tokenizer_class.from_pretrained(args.gen_model_name_or_path,do_lower_case=False)
 
+    #ppl
+    if args.evaluation_file:
+        eval_generations = tokenize_generations(args.evaluation_file, tokenizer) if args.evaluation_file else None
+        eval_iter = iter(eval_generations)
+        args.num_gen = len(eval_generations)
+        ppls = []
+
     if args.gen_type == "cclm":
         model = model_class.from_pretrained(args.gedi_model_name_or_path)
         model.to(args.device)
@@ -276,9 +294,24 @@ def main():
     else:
         gedi_model=None
 
-    user_prompt = len(args.prompt)==0
-    while True:
-
+    user_prompt = len(args.prompt)==0 and not args.prompt_file
+    generations = []
+    num_gen_sofar = 0
+    if args.prompt_file:
+        prompts = []
+        with open(args.prompt_file) as f:
+            for line in f:
+                prompts.append("<|endoftext|>" + line)
+        prompts_iter = iter(prompts)
+        args.num_gen = len(prompts)
+    while user_prompt or num_gen_sofar < args.num_gen:
+        if args.prompt_file:
+            args.prompt = next(prompts_iter)
+        #ppl
+        if args.evaluation_file:
+            eval_generation = next(eval_iter)
+        else:
+            eval_generation = None
         if user_prompt:
             if args.mode=="topic":
                 while True:
@@ -363,21 +396,29 @@ def main():
                                           attr_class = attr_class,
                                           code_0 = args.code_undesired,
                                           code_1 = args.code_desired,
-                                          multi_code=multi_code
+                                          multi_code=multi_code,
+                                          eval_generation=eval_generation
                                           )
+        num_gen_sofar += 1
+        if args.evaluation_file: #generated_sequence is just a single ppl
+            ppls.append(generated_sequence)
+            continue
 
-
-        text = tokenizer.decode(generated_sequence.tolist()[0], clean_up_tokenization_spaces=True)
+        text = tokenizer.decode(generated_sequence.tolist()[0][1:], clean_up_tokenization_spaces=True)
 
         if args.gen_type == "cclm":
             text = text[start_len:]
 
-        print("\n")
-        print(text)
-        print("\n")
+        generations.append(text.replace("\n", " ").replace("<|endoftext|>", "").strip() + "\n")
 
-        if not user_prompt:
-            break
+    if args.evaluation_file:
+        avg_ppl = np.mean(ppls)
+        print(ppls)
+        print(avg_ppl)
+        return avg_ppl
+
+    with open(args.out_file, "w+") as f:
+        f.writelines(generations)
 
 
 
