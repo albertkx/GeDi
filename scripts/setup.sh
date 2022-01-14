@@ -7,10 +7,6 @@ cd apex
 python setup.py install --cuda_ext --cpp_ext
 cd ..
 
-apt-get update
-apt-get install wget
-apt-get install unzip
-
 # transformers installation from source
 # git clone https://github.com/huggingface/transformers
 # cd transformers

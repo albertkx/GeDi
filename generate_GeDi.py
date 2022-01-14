@@ -18,7 +18,7 @@ import math
 
 from modeling_gpt2 import GPT2LMHeadModel
 
-from transformers import (
+from transformers2 import (
     GPT2Config,
     GPT2Tokenizer
 )

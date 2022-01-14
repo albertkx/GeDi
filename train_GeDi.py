@@ -35,7 +35,7 @@ import sys
 
 from modeling_gpt2 import GPT2LMHeadModel
 
-from transformers import (
+from transformers2 import (
     WEIGHTS_NAME,
     AdamW,
     AlbertConfig,
@@ -66,10 +66,10 @@ from transformers import (
     GPT2Config,
     GPT2Tokenizer,
 )
-from transformers import glue_compute_metrics as compute_metrics
-from transformers import glue_convert_examples_to_features as convert_examples_to_features
-from transformers import glue_output_modes as output_modes
-from transformers import glue_processors as processors
+from transformers2 import glue_compute_metrics as compute_metrics
+from transformers2 import glue_convert_examples_to_features as convert_examples_to_features
+from transformers2 import glue_output_modes as output_modes
+from transformers2 import glue_processors as processors
 
 # https://github.com/huggingface/transformers/blob/master/src/transformers/data/metrics/__init__.py
 def acc_and_f1(preds, labels):
@@ -297,7 +297,10 @@ def train(args, train_dataset, model, tokenizer):
                 assert args.model_type == 'gpt2' #let's not support other models for now
                 inputs = {"input_ids": batch[0], "attention_mask": batch[1], "labels": batch[3]}
 
-            outputs = model(**inputs) #modeling_gpt2.py modified to have none reduction
+            try:
+                outputs = model(**inputs) #modeling_gpt2.py modified to have none reduction
+            except:
+                continue
             losses = outputs[0].view(seq_batched.shape[0], -1)
             #loss mask includes first padded token
             if args.mask_eos_token:
@@ -557,7 +560,10 @@ def evaluate(args, model, tokenizer, prefix=""):
                 #want to compute LM loss here so feeding inputs as labels
                 inputs = {"input_ids": seq_batched, "attention_mask": None, "labels": seq_batched}
 
-                outputs = model(**inputs) #modeling_gpt2.py changed to have none reduction
+                try:
+                    outputs = model(**inputs) #modeling_gpt2.py changed to have none reduction
+                except:
+                    continue
                 losses = outputs[0].view(seq_batched.shape[0], -1)
 
                 #loss mask includes first padded token
@@ -761,7 +767,9 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
 
     # Convert to Tensors and build dataset
-    all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
+    #all_input_ids = torch.tensor([[50256] + f.input_ids[:-2] + [50256] for f in features], dtype=torch.long) # Hardcode
+    #all_attention_mask = torch.tensor([[1] + f.attention_mask[:-2] + [0] for f in features], dtype=torch.long)
+    all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long) # Hardcode
     all_attention_mask = torch.tensor([f.attention_mask for f in features], dtype=torch.long)
     all_token_type_ids = torch.tensor([f.token_type_ids for f in features], dtype=torch.long)
     if output_mode == "classification":
@@ -1084,7 +1092,7 @@ def main():
             checkpoints = list(
                 os.path.dirname(c) for c in sorted(glob.glob(args.output_dir + "/**/" + WEIGHTS_NAME, recursive=True))
             )
-            logging.getLogger("transformers.modeling_utils").setLevel(logging.WARN)  # Reduce logging
+            logging.getLogger("transformers2.modeling_utils").setLevel(logging.WARN)  # Reduce logging
         logger.info("Evaluate the following checkpoints: %s", checkpoints)
         for checkpoint in checkpoints:
             global_step = checkpoint.split("-")[-1] if len(checkpoints) > 1 else ""

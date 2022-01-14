@@ -12,8 +12,8 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 from torch.nn import functional as F
 
-from transformers.configuration_utils import PretrainedConfig
-from transformers.file_utils import (
+from transformers2.configuration_utils import PretrainedConfig
+from transformers2.file_utils import (
     DUMMY_INPUTS,
     TF2_WEIGHTS_NAME,
     TF_WEIGHTS_NAME,
@@ -53,29 +53,15 @@ class ModuleUtilsMixin:
         params = filter(lambda x: x.requires_grad, self.parameters()) if only_trainable else self.parameters()
         return sum(p.numel() for p in params)
 
-
-def calc_banned_ngram_tokens(prev_input_ids, num_hypos, no_repeat_ngram_size, cur_len) -> None:
-    """Copied from fairseq for no_repeat_ngram in beam_search"""
-    if cur_len + 1 < no_repeat_ngram_size:
-        # return no banned tokens if we haven't generated no_repeat_ngram_size tokens yet
-        return [[] for _ in range(num_hypos)]
-    generated_ngrams = [{} for _ in range(num_hypos)]
-    for idx in range(num_hypos):
-        gen_tokens = prev_input_ids[idx].tolist()
-        generated_ngram = generated_ngrams[idx]
-        for ngram in zip(*[gen_tokens[i:] for i in range(no_repeat_ngram_size)]):
-            prev_ngram_tuple = tuple(ngram[:-1])
-            generated_ngram[prev_ngram_tuple] = generated_ngram.get(prev_ngram_tuple, []) + [ngram[-1]]
-
 def top_k_top_p_filtering(logits, top_k=0, top_p=1.0, filter_value=-float("Inf"), min_tokens_to_keep=1):
-    """Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
-    Args:
-        logits: logits distribution shape (batch size, vocabulary size)
-        if top_k > 0: keep only top k tokens with highest probability (top-k filtering).
-        if top_p < 1.0: keep the top tokens with cumulative probability >= top_p (nucleus filtering).
-            Nucleus filtering is described in Holtzman et al. (http://arxiv.org/abs/1904.09751)
-        Make sure we keep at least min_tokens_to_keep per batch example in the output
-    From: https://gist.github.com/thomwolf/1a5a29f6962089e871b94cbd09daf317
+    """ Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
+        Args:
+            logits: logits distribution shape (batch size, vocabulary size)
+            if top_k > 0: keep only top k tokens with highest probability (top-k filtering).
+            if top_p < 1.0: keep the top tokens with cumulative probability >= top_p (nucleus filtering).
+                Nucleus filtering is described in Holtzman et al. (http://arxiv.org/abs/1904.09751)
+            Make sure we keep at least min_tokens_to_keep per batch example in the output
+        From: https://gist.github.com/thomwolf/1a5a29f6962089e871b94cbd09daf317
     """
     if top_k > 0:
         top_k = min(max(top_k, min_tokens_to_keep), logits.size(-1))  # Safety check
@@ -101,6 +87,18 @@ def top_k_top_p_filtering(logits, top_k=0, top_p=1.0, filter_value=-float("Inf")
         logits[indices_to_remove] = filter_value
     return logits
 
+def calc_banned_ngram_tokens(prev_input_ids, num_hypos, no_repeat_ngram_size, cur_len) -> None:
+    """Copied from fairseq for no_repeat_ngram in beam_search"""
+    if cur_len + 1 < no_repeat_ngram_size:
+        # return no banned tokens if we haven't generated no_repeat_ngram_size tokens yet
+        return [[] for _ in range(num_hypos)]
+    generated_ngrams = [{} for _ in range(num_hypos)]
+    for idx in range(num_hypos):
+        gen_tokens = prev_input_ids[idx].tolist()
+        generated_ngram = generated_ngrams[idx]
+        for ngram in zip(*[gen_tokens[i:] for i in range(no_repeat_ngram_size)]):
+            prev_ngram_tuple = tuple(ngram[:-1])
+            generated_ngram[prev_ngram_tuple] = generated_ngram.get(prev_ngram_tuple, []) + [ngram[-1]]
 
 class PreTrainedModel(nn.Module, ModuleUtilsMixin):
     r""" Base class for all models.
@@ -523,7 +521,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
             else:
                 # Load from our TensorFlow 2.0 checkpoints
                 try:
-                    from transformers import load_tf2_checkpoint_in_pytorch_model
+                    from transformers2 import load_tf2_checkpoint_in_pytorch_model
 
                     model = load_tf2_checkpoint_in_pytorch_model(model, resolved_archive_file, allow_missing_keys=True)
                 except ImportError:
@@ -728,6 +726,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
 
             tokenizer = AutoTokenizer.from_pretrained('distilgpt2')   # Initialize tokenizer
             model = AutoModelWithLMHead.from_pretrained('distilgpt2')    # Download model and configuration from S3 and cache.
+            import pdb; pdb.set_trace()
             outputs = model.generate(max_length=40, bos_token_id=tokenizer.bos_token_id, eos_token_ids=tokenizer.eos_token_id)  # do greedy decoding without beam search
             print('Generated: {}'.format(tokenizer.decode(outputs[0], skip_special_tokens=True)))
 
@@ -1177,10 +1176,19 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
             if eval_generation:
                 next_elem = next(eval_gen)
                 next_token = torch.tensor([next_elem]).cuda()
+                # prob = F.log_softmax(next_token_logits, dim=-1)[0][next_elem].item()
                 prob = next_token_logits[0][next_elem].item()
                 total_logprob += prob
                 print(prob)
                 logprobs.append(prob)
+                #outputs_new = self(**model_inputs)
+                #next_token_logits_new = outputs_new[0][:, -1, :]
+                #if all_logits is None:
+                #    all_logits = next_token_logits_new
+                #    all_labels = next_token
+                #else:
+                #    all_logits = torch.cat((all_logits, next_token_logits_new), dim=0)
+                #    all_labels = torch.cat((all_labels, next_token))
             elif do_sample:
                 # Temperature (higher temperature => more likely to sample low probability tokens)
                 if temperature != 1.0:
@@ -1219,8 +1227,12 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
                 break
 
         if eval_generation: #convert probability to ppl
+            # loss_fct = CrossEntropyLoss()
+            # loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+            # return torch.exp(loss)
+            print(total_logprob)
             return np.exp(-(total_logprob) / (len(eval_generation)))
-        if not(gedi_model is None):
+        #if not(gedi_model is None):
             print("GeDi estimates the probability that it sample is desired class is: " + str(torch.exp(logp_desired[0]).item()))
 
         # add eos_token_ids to unfinished sentences
